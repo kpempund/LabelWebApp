@@ -195,3 +195,9 @@ def test_malformed_freehand_raises():
     bad = {"images": {"a.jpg": {"polylines": [], "freehand": [{"points": [[1.0, 2.0]]}]}}}
     with pytest.raises(ValueError):  # missing "width"
         parse_annotations_json(json.dumps(bad).encode(), known_names={"a.jpg"})
+
+
+def test_freehand_empty_points_raises():
+    bad = {"images": {"a.jpg": {"polylines": [], "freehand": [{"points": [], "width": 5}]}}}
+    with pytest.raises(ValueError):
+        parse_annotations_json(json.dumps(bad).encode(), known_names={"a.jpg"})

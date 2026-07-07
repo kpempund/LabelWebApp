@@ -114,7 +114,7 @@ if imported is not None:
     import_id = (imported.name, imported.size)
     if ss["import_applied"] != import_id:
         try:
-            parsed, width, skipped = parse_annotations_json(
+            parsed, _, width, skipped = parse_annotations_json(
                 imported.getvalue(), known_names={it.name for it in items}
             )
             ss["annotations"].update(parsed)
