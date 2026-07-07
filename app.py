@@ -1,19 +1,15 @@
-import io
 import os
-import zipfile
 from dataclasses import dataclass
 from typing import List
 
 import streamlit as st
 from PIL import Image, ImageDraw, ImageOps
 from streamlit_drawable_canvas import st_canvas
-from streamlit_image_coordinates import streamlit_image_coordinates
 
 from core import (
     DEFAULT_MASK_WIDTH,
     MAX_MASK_WIDTH,
     MIN_MASK_WIDTH,
-    annotations_to_json_bytes,
     combine_masks,
     mask_to_png_bytes,
     parse_annotations_json,
@@ -31,7 +27,7 @@ DEFAULT_PEN_SIZE = 6
 st.set_page_config(
     page_title="Wrinkle Annotator",
     layout="wide",
-    initial_sidebar_state="collapsed",
+    initial_sidebar_state="expanded",
 )
 
 st.markdown(
@@ -44,6 +40,10 @@ st.markdown(
     }
     div[data-testid="stVerticalBlock"] {
         gap: 0.75rem;
+    }
+    section[data-testid="stSidebar"] {
+        min-width: 260px !important;
+        width: 260px !important;
     }
     </style>
     """,
@@ -141,6 +141,28 @@ def extract_strokes(canvas_result, scale, pen_size):
     return strokes
 
 
+def extract_point(canvas_result, scale):
+    """Return the most recently added point object in original-image coordinates."""
+    data = getattr(canvas_result, "json_data", None)
+    if not data:
+        return None
+    objects = data.get("objects", [])
+    if not objects:
+        return None
+
+    obj = objects[-1]
+    if "left" in obj and "top" in obj:
+        x = float(obj["left"])
+        y = float(obj["top"])
+        if obj.get("type") == "circle" and obj.get("originX") != "center":
+            x += float(obj.get("radius", 0)) * float(obj.get("scaleX", 1))
+            y += float(obj.get("radius", 0)) * float(obj.get("scaleY", 1))
+        return (x / scale, y / scale)
+    if "x1" in obj and "y1" in obj:
+        return (float(obj["x1"]) / scale, float(obj["y1"]) / scale)
+    return None
+
+
 def build_mask(polylines, strokes, size, mask_width):
     return combine_masks(
         polylines_to_mask(polylines, size=size, width=mask_width),
@@ -156,19 +178,21 @@ ss.setdefault("idx", 0)
 ss.setdefault("last_click", None)
 ss.setdefault("import_applied", None)
 ss.setdefault("canvas_nonce", 0)
+ss.setdefault("click_canvas_nonce", 0)
 
 
 def switch_image(new_idx: int):
     ss["idx"] = new_idx
     ss["current_points"] = []
     ss["last_click"] = None
+    ss["click_canvas_nonce"] += 1
 
 
 st.title("Wrinkle Annotator")
 
 with st.sidebar:
     st.header("Controls")
-    tool = st.radio("Tool", ["Click points", "Freehand pen"], key="tool")
+    tool = st.radio("Tool", ["Freehand pen", "Click points"], key="tool")
     mask_width = st.slider(
         "Mask line width (click tool, px)",
         MIN_MASK_WIDTH,
@@ -311,16 +335,32 @@ if tool == "Freehand pen":
 else:
     st.subheader("Click the wrinkle centerline")
     frame = render_display_frame(current.img, scale, committed, ss["current_points"], committed_fh)
-    click = streamlit_image_coordinates(frame, key=f"click_{current.name}")
-    if click is not None:
-        click_id = (click["x"], click["y"])
+    disp_w = max(1, round(orig_w * scale))
+    disp_h = max(1, round(orig_h * scale))
+    click_result = st_canvas(
+        fill_color="#00FF00",
+        stroke_width=1,
+        stroke_color="#00FF00",
+        background_image=frame,
+        update_streamlit=True,
+        height=disp_h,
+        width=disp_w,
+        drawing_mode="point",
+        display_toolbar=False,
+        point_display_radius=4,
+        key=f"click_canvas_{current.name}_{ss['click_canvas_nonce']}",
+    )
+    point = extract_point(click_result, scale)
+    if point is not None:
+        ox = min(max(point[0], 0.0), orig_w - 1.0)
+        oy = min(max(point[1], 0.0), orig_h - 1.0)
+        click_id = (round(ox, 3), round(oy, 3))
         if click_id != ss["last_click"]:
             ss["last_click"] = click_id
-            ox = min(max(click["x"] / scale, 0.0), orig_w - 1.0)
-            oy = min(max(click["y"] / scale, 0.0), orig_h - 1.0)
             pt = (ox, oy)
             if not ss["current_points"] or ss["current_points"][-1] != pt:
                 ss["current_points"].append(pt)
+                ss["click_canvas_nonce"] += 1
                 st.rerun()
 
     b1, b2, b3 = st.columns(3)
@@ -329,6 +369,8 @@ else:
             if len(ss["current_points"]) >= 2:
                 committed.append(ss["current_points"])
                 ss["current_points"] = []
+                ss["last_click"] = None
+                ss["click_canvas_nonce"] += 1
                 st.rerun()
             else:
                 st.warning("Need at least 2 points to finish a wrinkle.")
@@ -336,30 +378,22 @@ else:
         if st.button("Undo last point", use_container_width=True):
             if ss["current_points"]:
                 ss["current_points"].pop()
+                ss["last_click"] = None
+                ss["click_canvas_nonce"] += 1
                 st.rerun()
     with b3:
         if st.button("Discard in-progress", use_container_width=True):
             ss["current_points"] = []
+            ss["last_click"] = None
+            ss["click_canvas_nonce"] += 1
             st.rerun()
 
-sizes = {it.name: it.img.size for it in items}
-names_with_work = {n for n, v in ss["annotations"].items() if v} | {
-    n for n, v in ss["freehand"].items() if v
-}
-names_with_work &= set(sizes)
-if names_with_work:
-    export_ann = {n: ss["annotations"].get(n, []) for n in names_with_work}
-    export_fh = {n: ss["freehand"].get(n, []) for n in names_with_work if ss["freehand"].get(n)}
-    zip_buf = io.BytesIO()
-    with zipfile.ZipFile(zip_buf, "w", compression=zipfile.ZIP_DEFLATED) as zf:
-        for name in names_with_work:
-            m = build_mask(ss["annotations"].get(name, []), ss["freehand"].get(name, []), sizes[name], mask_width)
-            zf.writestr(safe_mask_name(name), mask_to_png_bytes(m))
-        zf.writestr("annotations.json", annotations_to_json_bytes(export_ann, mask_width, export_fh))
+if committed or committed_fh:
+    current_mask = build_mask(committed, committed_fh, (orig_w, orig_h), mask_width)
     st.download_button(
-        f"Download ZIP ({len(names_with_work)} masks + annotations.json)",
-        data=zip_buf.getvalue(),
-        file_name="masks.zip",
-        mime="application/zip",
+        "Download binary mask",
+        data=mask_to_png_bytes(current_mask),
+        file_name=safe_mask_name(current.name),
+        mime="image/png",
         use_container_width=True,
     )
