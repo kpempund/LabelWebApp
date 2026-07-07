@@ -97,22 +97,32 @@ def safe_mask_name(original_name: str) -> str:
     return f"{base}_mask.png"
 
 
-def annotations_to_json_bytes(annotations: Dict[str, List[Polyline]], mask_width: int) -> bytes:
-    payload = {
-        "mask_width": int(mask_width),
-        "images": {
-            name: {"polylines": [[[float(x), float(y)] for x, y in line] for line in lines]}
-            for name, lines in annotations.items()
-            if lines
-        },
-    }
+def annotations_to_json_bytes(annotations: Dict[str, List[Polyline]], mask_width: int, freehand=None) -> bytes:
+    freehand = freehand or {}
+    images = {}
+    for name in set(annotations) | set(freehand):
+        lines = annotations.get(name, [])
+        strokes = freehand.get(name, [])
+        if not lines and not strokes:
+            continue
+        entry = {"polylines": [[[float(x), float(y)] for x, y in line] for line in lines]}
+        if strokes:
+            entry["freehand"] = [
+                {
+                    "points": [[float(x), float(y)] for x, y in s["points"]],
+                    "width": int(s["width"]),
+                }
+                for s in strokes
+            ]
+        images[name] = entry
+    payload = {"mask_width": int(mask_width), "images": images}
     return json.dumps(payload, indent=2).encode("utf-8")
 
 
 def parse_annotations_json(raw: bytes, known_names: Set[str]):
     """Parse an exported annotations.json.
 
-    Returns (annotations, mask_width, skipped_names).
+    Returns (annotations, freehand, mask_width, skipped_names).
     Raises ValueError on malformed input; nothing is partially accepted.
     """
     try:
@@ -127,6 +137,7 @@ def parse_annotations_json(raw: bytes, known_names: Set[str]):
         mask_width = DEFAULT_MASK_WIDTH
 
     annotations: Dict[str, List[Polyline]] = {}
+    freehand: Dict[str, list] = {}
     skipped: List[str] = []
     for name, entry in payload["images"].items():
         if not isinstance(entry, dict) or not isinstance(entry.get("polylines"), list):
@@ -145,8 +156,36 @@ def parse_annotations_json(raw: bytes, known_names: Set[str]):
                     raise ValueError(f"Bad point {pt!r} in polylines for '{name}'.")
                 pts.append((float(pt[0]), float(pt[1])))
             polylines.append(pts)
+
+        raw_fh = entry.get("freehand", [])
+        if not isinstance(raw_fh, list):
+            raise ValueError(f"'freehand' for '{name}' must be a list.")
+        strokes: list = []
+        for s in raw_fh:
+            if (
+                not isinstance(s, dict)
+                or not isinstance(s.get("points"), list)
+                or not isinstance(s.get("width"), (int, float))
+                or isinstance(s.get("width"), bool)
+            ):
+                raise ValueError(f"Malformed freehand stroke for '{name}'.")
+            spts: Polyline = []
+            for pt in s["points"]:
+                if (
+                    not isinstance(pt, list)
+                    or len(pt) != 2
+                    or not all(isinstance(v, (int, float)) for v in pt)
+                ):
+                    raise ValueError(f"Bad freehand point {pt!r} for '{name}'.")
+                spts.append((float(pt[0]), float(pt[1])))
+            if not spts:
+                raise ValueError(f"Freehand stroke for '{name}' needs >= 1 point.")
+            strokes.append({"points": spts, "width": int(s["width"])})
+
         if name not in known_names:
             skipped.append(name)
             continue
         annotations[name] = polylines
-    return annotations, mask_width, skipped
+        if strokes:
+            freehand[name] = strokes
+    return annotations, freehand, mask_width, skipped

@@ -76,10 +76,11 @@ def test_json_roundtrip():
         "b.png": [[(0.0, 0.0), (10.0, 10.0)]],
     }
     raw = annotations_to_json_bytes(annotations, mask_width=5)
-    parsed, width, skipped = parse_annotations_json(raw, known_names={"a.jpg", "b.png"})
+    parsed, fh, width, skipped = parse_annotations_json(raw, known_names={"a.jpg", "b.png"})
     assert width == 5
     assert skipped == []
     assert parsed == annotations
+    assert fh == {}
 
 
 def test_export_omits_images_without_polylines():
@@ -91,7 +92,7 @@ def test_export_omits_images_without_polylines():
 
 def test_unknown_image_names_are_skipped():
     raw = annotations_to_json_bytes({"gone.jpg": [[(0.0, 0.0), (1.0, 1.0)]]}, 4)
-    parsed, _, skipped = parse_annotations_json(raw, known_names={"other.jpg"})
+    parsed, _, _, skipped = parse_annotations_json(raw, known_names={"other.jpg"})
     assert parsed == {}
     assert skipped == ["gone.jpg"]
 
@@ -113,7 +114,7 @@ def test_out_of_range_mask_width_falls_back_to_default():
     raw = annotations_to_json_bytes({"a.jpg": [[(0.0, 0.0), (1.0, 1.0)]]}, 4)
     payload = json.loads(raw.decode("utf-8"))
     payload["mask_width"] = 99
-    parsed, width, _ = parse_annotations_json(json.dumps(payload).encode(), known_names={"a.jpg"})
+    parsed, _, width, _ = parse_annotations_json(json.dumps(payload).encode(), known_names={"a.jpg"})
     assert width == 4
 
 
@@ -157,3 +158,40 @@ def test_combine_masks_unions_pixels():
 def test_combine_masks_requires_at_least_one():
     with pytest.raises(ValueError):
         combine_masks()
+
+
+def test_json_roundtrip_with_freehand():
+    annotations = {"a.jpg": [[(1.0, 2.0), (3.0, 4.0)]]}
+    freehand = {
+        "a.jpg": [{"points": [(5.0, 6.0), (7.0, 8.0)], "width": 12}],
+        "b.png": [{"points": [(0.0, 0.0)], "width": 20}],
+    }
+    raw = annotations_to_json_bytes(annotations, mask_width=4, freehand=freehand)
+    parsed, fh, width, skipped = parse_annotations_json(raw, known_names={"a.jpg", "b.png"})
+    assert width == 4
+    assert skipped == []
+    assert parsed["a.jpg"] == [[(1.0, 2.0), (3.0, 4.0)]]
+    assert fh["a.jpg"] == [{"points": [(5.0, 6.0), (7.0, 8.0)], "width": 12}]
+    assert fh["b.png"] == [{"points": [(0.0, 0.0)], "width": 20}]
+
+
+def test_old_json_without_freehand_still_loads():
+    raw = annotations_to_json_bytes({"a.jpg": [[(0.0, 0.0), (1.0, 1.0)]]}, 4)
+    parsed, fh, width, skipped = parse_annotations_json(raw, known_names={"a.jpg"})
+    assert parsed == {"a.jpg": [[(0.0, 0.0), (1.0, 1.0)]]}
+    assert fh == {}
+
+
+def test_freehand_only_image_is_exported_and_parsed():
+    raw = annotations_to_json_bytes({}, 4, freehand={"c.jpg": [{"points": [(1.0, 1.0), (2.0, 2.0)], "width": 9}]})
+    payload = json.loads(raw.decode("utf-8"))
+    assert "c.jpg" in payload["images"]
+    parsed, fh, _, _ = parse_annotations_json(raw, known_names={"c.jpg"})
+    assert parsed["c.jpg"] == []
+    assert fh["c.jpg"][0]["width"] == 9
+
+
+def test_malformed_freehand_raises():
+    bad = {"images": {"a.jpg": {"polylines": [], "freehand": [{"points": [[1.0, 2.0]]}]}}}
+    with pytest.raises(ValueError):  # missing "width"
+        parse_annotations_json(json.dumps(bad).encode(), known_names={"a.jpg"})
