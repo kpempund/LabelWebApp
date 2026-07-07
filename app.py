@@ -6,8 +6,8 @@ from typing import List
 
 import streamlit as st
 from PIL import Image, ImageDraw, ImageOps
-from streamlit_image_coordinates import streamlit_image_coordinates
 from streamlit_drawable_canvas import st_canvas
+from streamlit_image_coordinates import streamlit_image_coordinates
 
 from core import (
     DEFAULT_MASK_WIDTH,
@@ -22,12 +22,33 @@ from core import (
     strokes_to_mask,
 )
 
-MAX_DISPLAY_W = 900
+MAX_DISPLAY_W = 820
+MAX_DISPLAY_H = 620
 MIN_PEN_SIZE = 1
 MAX_PEN_SIZE = 60
 DEFAULT_PEN_SIZE = 6
 
-st.set_page_config(page_title="Wrinkle Polyline Annotator", layout="wide")
+st.set_page_config(
+    page_title="Wrinkle Annotator",
+    layout="wide",
+    initial_sidebar_state="collapsed",
+)
+
+st.markdown(
+    """
+    <style>
+    .block-container {
+        max-width: 1180px;
+        padding-top: 1rem;
+        padding-bottom: 1rem;
+    }
+    div[data-testid="stVerticalBlock"] {
+        gap: 0.75rem;
+    }
+    </style>
+    """,
+    unsafe_allow_html=True,
+)
 
 
 def _expected_password() -> str:
@@ -48,7 +69,7 @@ def check_password() -> None:
     if not expected:
         st.error("APP_PASSWORD is not configured on the server. Access is disabled.")
         st.stop()
-    pw = st.text_input("🔒 Password", type="password")
+    pw = st.text_input("Password", type="password")
     if not pw:
         st.stop()
     if pw == expected:
@@ -64,7 +85,7 @@ check_password()
 @dataclass
 class Item:
     name: str
-    img: Image.Image  # RGB image
+    img: Image.Image
 
 
 def pil_to_rgb(img: Image.Image) -> Image.Image:
@@ -73,9 +94,12 @@ def pil_to_rgb(img: Image.Image) -> Image.Image:
     return img
 
 
+def display_scale(img: Image.Image) -> float:
+    return min(1.0, MAX_DISPLAY_W / img.width, MAX_DISPLAY_H / img.height)
+
+
 def render_display_frame(img, scale, committed, in_progress, committed_freehand):
-    """Downscale the image and draw committed polylines + freehand (red) and
-    the in-progress click polyline (green)."""
+    """Downscale the image and draw committed work plus the active click line."""
     disp_w = max(1, round(img.width * scale))
     disp_h = max(1, round(img.height * scale))
     frame = img.resize((disp_w, disp_h)) if scale < 1.0 else img.copy()
@@ -98,8 +122,7 @@ def render_display_frame(img, scale, committed, in_progress, committed_freehand)
 
 
 def extract_strokes(canvas_result, scale, pen_size):
-    """Convert freedraw path objects from the canvas into original-resolution
-    strokes: {"points": [[x, y], ...], "width": int}."""
+    """Convert freedraw path objects into original-resolution strokes."""
     data = getattr(canvas_result, "json_data", None)
     if not data:
         return []
@@ -126,13 +149,13 @@ def build_mask(polylines, strokes, size, mask_width):
 
 
 ss = st.session_state
-ss.setdefault("annotations", {})      # name -> list of polylines (original coords)
-ss.setdefault("freehand", {})         # name -> list of {"points", "width"} (original coords)
-ss.setdefault("current_points", [])   # in-progress click polyline (original coords)
+ss.setdefault("annotations", {})
+ss.setdefault("freehand", {})
+ss.setdefault("current_points", [])
 ss.setdefault("idx", 0)
 ss.setdefault("last_click", None)
 ss.setdefault("import_applied", None)
-ss.setdefault("canvas_nonce", 0)      # bump to reset the freehand canvas
+ss.setdefault("canvas_nonce", 0)
 
 
 def switch_image(new_idx: int):
@@ -141,10 +164,10 @@ def switch_image(new_idx: int):
     ss["last_click"] = None
 
 
-st.title("🖊️ Wrinkle Annotator → Bitmask PNG Export")
+st.title("Wrinkle Annotator")
 
 with st.sidebar:
-    st.header("Controls 🎛️")
+    st.header("Controls")
     tool = st.radio("Tool", ["Click points", "Freehand pen"], key="tool")
     mask_width = st.slider(
         "Mask line width (click tool, px)",
@@ -164,11 +187,9 @@ with st.sidebar:
             key="pen_size_slider",
         )
         ss["pen_size_value"] = pen_size
-        st.caption("Draw a wrinkle with the pen; the stroke is painted into the mask at this thickness.")
-    else:
-        st.caption("Click along a wrinkle's centerline to drop vertices, then press **Finish wrinkle**.")
+
     st.divider()
-    st.subheader("Resume session 📂")
+    st.subheader("Resume session")
     imported = st.file_uploader("Import annotations.json", type=["json"], key="import_json")
 
 uploaded = st.file_uploader(
@@ -188,10 +209,9 @@ if uploaded:
             st.warning(f"Failed to read {f.name}: {e}")
 
 if not items:
-    st.info("Upload some images to start ✨")
+    st.info("Upload images to start.")
     st.stop()
 
-# apply a pending JSON import once per uploaded file
 if imported is not None:
     import_id = (imported.name, imported.size)
     if ss["import_applied"] != import_id:
@@ -215,136 +235,119 @@ if imported is not None:
 if ss["idx"] >= len(items):
     switch_image(0)
 
-colA, colB, colC = st.columns([1, 2, 1])
-with colA:
-    if st.button("⬅️ Prev", use_container_width=True):
+col_a, col_b, col_c = st.columns([1, 2, 1])
+with col_a:
+    if st.button("Prev", use_container_width=True):
         switch_image((ss["idx"] - 1) % len(items))
         st.rerun()
-with colB:
+with col_b:
     st.markdown(
-        f"<h4 style='text-align:center;'>🖼️ {ss['idx'] + 1}/{len(items)} — "
+        f"<h4 style='text-align:center;'>{ss['idx'] + 1}/{len(items)} - "
         f"<code>{items[ss['idx']].name}</code></h4>",
         unsafe_allow_html=True,
     )
-with colC:
-    if st.button("Next ➡️", use_container_width=True):
+with col_c:
+    if st.button("Next", use_container_width=True):
         switch_image((ss["idx"] + 1) % len(items))
         st.rerun()
 
 current = items[ss["idx"]]
 orig_w, orig_h = current.img.size
-scale = min(1.0, MAX_DISPLAY_W / orig_w)
+scale = display_scale(current.img)
 committed = ss["annotations"].setdefault(current.name, [])
 committed_fh = ss["freehand"].setdefault(current.name, [])
 
-left, right = st.columns([2, 1])
-
-with left:
-    if tool == "Freehand pen":
-        st.subheader("Draw the wrinkle with the pen ✏️")
-        disp_w = max(1, round(orig_w * scale))
-        disp_h = max(1, round(orig_h * scale))
-        bg = render_display_frame(current.img, scale, committed, [], committed_fh)
-        canvas_result = st_canvas(
-            fill_color="rgba(0,0,0,0)",
-            stroke_width=pen_size,
-            stroke_color="#00FF00",
-            background_image=bg,
-            update_streamlit=True,
-            height=disp_h,
-            width=disp_w,
-            drawing_mode="freedraw",
-            key=f"canvas_{current.name}_{ss['canvas_nonce']}",
-        )
-        b1, b2 = st.columns(2)
-        with b1:
-            if st.button("✅ Finish freehand strokes", use_container_width=True):
-                new_strokes = extract_strokes(canvas_result, scale, pen_size)
-                if new_strokes:
-                    committed_fh.extend(new_strokes)
-                    ss["canvas_nonce"] += 1
-                    st.rerun()
-                else:
-                    st.warning("Draw at least one stroke first.")
-        with b2:
-            if st.button("🧹 Clear pending pen", use_container_width=True):
-                ss["canvas_nonce"] += 1
-                st.rerun()
-    else:
-        st.subheader("Click the wrinkle centerline ✍️")
-        frame = render_display_frame(current.img, scale, committed, ss["current_points"], committed_fh)
-        click = streamlit_image_coordinates(frame, key=f"click_{current.name}")
-        if click is not None:
-            click_id = (click["x"], click["y"])
-            if click_id != ss["last_click"]:
-                ss["last_click"] = click_id
-                ox = min(max(click["x"] / scale, 0.0), orig_w - 1.0)
-                oy = min(max(click["y"] / scale, 0.0), orig_h - 1.0)
-                pt = (ox, oy)
-                if not ss["current_points"] or ss["current_points"][-1] != pt:
-                    ss["current_points"].append(pt)
-                    st.rerun()
-
-        b1, b2, b3 = st.columns(3)
-        with b1:
-            if st.button("✅ Finish wrinkle", use_container_width=True):
-                if len(ss["current_points"]) >= 2:
-                    committed.append(ss["current_points"])
-                    ss["current_points"] = []
-                    st.rerun()
-                else:
-                    st.warning("Need at least 2 points to finish a wrinkle.")
-        with b2:
-            if st.button("↩️ Undo last point", use_container_width=True):
-                if ss["current_points"]:
-                    ss["current_points"].pop()
-                    st.rerun()
-        with b3:
-            if st.button("🗑️ Discard in-progress", use_container_width=True):
-                ss["current_points"] = []
-                st.rerun()
-
-with right:
-    st.subheader(f"Click wrinkles ({len(committed)}) 📋")
-    for i, line in enumerate(committed):
-        c1, c2 = st.columns([3, 1])
-        c1.write(f"Wrinkle {i + 1} — {len(line)} pts")
-        if c2.button("🗑️", key=f"del_{current.name}_{i}"):
-            committed.pop(i)
-            st.rerun()
-
-    st.subheader(f"Freehand strokes ({len(committed_fh)}) ✏️")
-    for i, s in enumerate(committed_fh):
-        c1, c2 = st.columns([3, 1])
-        c1.write(f"Stroke {i + 1} — {len(s['points'])} pts, w={s['width']}")
-        if c2.button("🗑️", key=f"delfh_{current.name}_{i}"):
-            committed_fh.pop(i)
-            st.rerun()
-
-    st.subheader("Export 📦")
+with st.sidebar:
+    st.divider()
+    st.subheader("Current image")
+    st.write(f"Click wrinkles: {len(committed)}")
+    st.write(f"Freehand strokes: {len(committed_fh)}")
+    if committed and st.button("Delete last click wrinkle", use_container_width=True):
+        committed.pop()
+        st.rerun()
+    if committed_fh and st.button("Delete last freehand stroke", use_container_width=True):
+        committed_fh.pop()
+        st.rerun()
     if committed or committed_fh:
-        mask = build_mask(committed, committed_fh, (orig_w, orig_h), mask_width)
+        current_mask = build_mask(committed, committed_fh, (orig_w, orig_h), mask_width)
         st.download_button(
-            "⬇️ Download mask PNG (current image)",
-            data=mask_to_png_bytes(mask),
+            "Download current mask PNG",
+            data=mask_to_png_bytes(current_mask),
             file_name=safe_mask_name(current.name),
             mime="image/png",
             use_container_width=True,
         )
-        st.caption("Mask preview (white=255, black=0)")
-        st.image(mask, clamp=True, use_container_width=True)
-    else:
-        st.info("Add at least one wrinkle or pen stroke to export 🙂")
 
-st.divider()
-st.subheader("Download ALL masks + annotations as ZIP 🗜️")
+if tool == "Freehand pen":
+    st.subheader("Draw the wrinkle with the pen")
+    disp_w = max(1, round(orig_w * scale))
+    disp_h = max(1, round(orig_h * scale))
+    bg = render_display_frame(current.img, scale, committed, [], committed_fh)
+    canvas_result = st_canvas(
+        fill_color="rgba(0,0,0,0)",
+        stroke_width=pen_size,
+        stroke_color="#00FF00",
+        background_image=bg,
+        update_streamlit=True,
+        height=disp_h,
+        width=disp_w,
+        drawing_mode="freedraw",
+        key=f"canvas_{current.name}_{ss['canvas_nonce']}",
+    )
+    b1, b2 = st.columns(2)
+    with b1:
+        if st.button("Finish freehand strokes", use_container_width=True):
+            new_strokes = extract_strokes(canvas_result, scale, pen_size)
+            if new_strokes:
+                committed_fh.extend(new_strokes)
+                ss["canvas_nonce"] += 1
+                st.rerun()
+            else:
+                st.warning("Draw at least one stroke first.")
+    with b2:
+        if st.button("Clear pending pen", use_container_width=True):
+            ss["canvas_nonce"] += 1
+            st.rerun()
+else:
+    st.subheader("Click the wrinkle centerline")
+    frame = render_display_frame(current.img, scale, committed, ss["current_points"], committed_fh)
+    click = streamlit_image_coordinates(frame, key=f"click_{current.name}")
+    if click is not None:
+        click_id = (click["x"], click["y"])
+        if click_id != ss["last_click"]:
+            ss["last_click"] = click_id
+            ox = min(max(click["x"] / scale, 0.0), orig_w - 1.0)
+            oy = min(max(click["y"] / scale, 0.0), orig_h - 1.0)
+            pt = (ox, oy)
+            if not ss["current_points"] or ss["current_points"][-1] != pt:
+                ss["current_points"].append(pt)
+                st.rerun()
+
+    b1, b2, b3 = st.columns(3)
+    with b1:
+        if st.button("Finish wrinkle", use_container_width=True):
+            if len(ss["current_points"]) >= 2:
+                committed.append(ss["current_points"])
+                ss["current_points"] = []
+                st.rerun()
+            else:
+                st.warning("Need at least 2 points to finish a wrinkle.")
+    with b2:
+        if st.button("Undo last point", use_container_width=True):
+            if ss["current_points"]:
+                ss["current_points"].pop()
+                st.rerun()
+    with b3:
+        if st.button("Discard in-progress", use_container_width=True):
+            ss["current_points"] = []
+            st.rerun()
 
 sizes = {it.name: it.img.size for it in items}
-names_with_work = {n for n, v in ss["annotations"].items() if v} | {n for n, v in ss["freehand"].items() if v}
-names_with_work &= set(sizes)  # only images currently uploaded
-if not names_with_work:
-    st.warning("No wrinkles or pen strokes yet.")
-else:
+names_with_work = {n for n, v in ss["annotations"].items() if v} | {
+    n for n, v in ss["freehand"].items() if v
+}
+names_with_work &= set(sizes)
+if names_with_work:
     export_ann = {n: ss["annotations"].get(n, []) for n in names_with_work}
     export_fh = {n: ss["freehand"].get(n, []) for n in names_with_work if ss["freehand"].get(n)}
     zip_buf = io.BytesIO()
@@ -354,7 +357,7 @@ else:
             zf.writestr(safe_mask_name(name), mask_to_png_bytes(m))
         zf.writestr("annotations.json", annotations_to_json_bytes(export_ann, mask_width, export_fh))
     st.download_button(
-        f"⬇️ Download ZIP ({len(names_with_work)} masks + annotations.json)",
+        f"Download ZIP ({len(names_with_work)} masks + annotations.json)",
         data=zip_buf.getvalue(),
         file_name="masks.zip",
         mime="application/zip",
