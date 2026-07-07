@@ -44,6 +44,47 @@ def polylines_to_mask(polylines: List[Polyline], size: Tuple[int, int], width: i
     return np.array(img, dtype=np.uint8)
 
 
+def strokes_to_mask(strokes, size):
+    """Rasterize freehand strokes, each at its OWN pen width.
+
+    strokes: list of {"points": [(x, y), ...], "width": int} in original-image
+        pixel coordinates. Unlike polylines_to_mask, width is per-stroke and is
+        not taken from the global mask-width slider.
+    size: (width, height) of the output mask.
+
+    Returns an HxW uint8 array with values 0 or 255.
+    """
+    w, h = size
+    img = Image.new("L", (w, h), 0)
+    draw = ImageDraw.Draw(img)
+    for stroke in strokes:
+        width = int(stroke.get("width", 0))
+        if width < 1:
+            continue
+        pts = [(float(x), float(y)) for x, y in stroke["points"]]
+        if not pts:
+            continue
+        radius = width / 2.0
+        if len(pts) == 1:
+            px, py = pts[0]
+            draw.ellipse([px - radius, py - radius, px + radius, py + radius], fill=255)
+            continue
+        draw.line(pts, fill=255, width=width, joint="curve")
+        for px, py in (pts[0], pts[-1]):
+            draw.ellipse([px - radius, py - radius, px + radius, py + radius], fill=255)
+    return np.array(img, dtype=np.uint8)
+
+
+def combine_masks(*masks):
+    """Pixelwise union of one or more 0/255 uint8 masks of identical shape."""
+    if not masks:
+        raise ValueError("combine_masks needs at least one mask")
+    out = masks[0].copy()
+    for m in masks[1:]:
+        out = np.maximum(out, m)
+    return out
+
+
 def mask_to_png_bytes(mask: np.ndarray) -> bytes:
     im = Image.fromarray(mask, mode="L")
     buf = io.BytesIO()

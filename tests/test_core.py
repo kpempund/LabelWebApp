@@ -67,7 +67,7 @@ import json
 
 import pytest
 
-from core import annotations_to_json_bytes, parse_annotations_json
+from core import annotations_to_json_bytes, parse_annotations_json, strokes_to_mask, combine_masks
 
 
 def test_json_roundtrip():
@@ -115,3 +115,45 @@ def test_out_of_range_mask_width_falls_back_to_default():
     payload["mask_width"] = 99
     parsed, width, _ = parse_annotations_json(json.dumps(payload).encode(), known_names={"a.jpg"})
     assert width == 4
+
+
+def test_strokes_to_mask_empty_is_black():
+    mask = strokes_to_mask([], size=(100, 60))
+    assert mask.shape == (60, 100)
+    assert mask.dtype == np.uint8
+    assert mask.sum() == 0
+
+
+def test_stroke_width_is_honored_not_mask_slider():
+    stroke = {"points": [[10.0, 30.0], [90.0, 30.0]], "width": 7}
+    mask = strokes_to_mask([stroke], size=(100, 60))
+    assert set(np.unique(mask)) <= {0, 255}
+    assert mask[30, 50] == 255
+    thickness = int((mask[:, 50] == 255).sum())
+    assert 6 <= thickness <= 9  # ~7px
+
+
+def test_single_point_stroke_draws_a_dot():
+    stroke = {"points": [[50.0, 30.0]], "width": 8}
+    mask = strokes_to_mask([stroke], size=(100, 60))
+    assert mask[30, 50] == 255
+    assert mask[0, 0] == 0
+
+
+def test_zero_width_stroke_is_skipped():
+    mask = strokes_to_mask([{"points": [[10.0, 10.0], [20.0, 20.0]], "width": 0}], size=(50, 50))
+    assert mask.sum() == 0
+
+
+def test_combine_masks_unions_pixels():
+    a = strokes_to_mask([{"points": [[10.0, 10.0], [40.0, 10.0]], "width": 3}], size=(50, 50))
+    b = strokes_to_mask([{"points": [[10.0, 40.0], [40.0, 40.0]], "width": 3}], size=(50, 50))
+    merged = combine_masks(a, b)
+    assert merged[10, 25] == 255
+    assert merged[40, 25] == 255
+    assert set(np.unique(merged)) <= {0, 255}
+
+
+def test_combine_masks_requires_at_least_one():
+    with pytest.raises(ValueError):
+        combine_masks()
