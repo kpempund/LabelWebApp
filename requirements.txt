@@ -1,0 +1,5 @@
+streamlit
+streamlit-image-coordinates
+numpy
+Pillow
+pytest
