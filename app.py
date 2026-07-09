@@ -1,5 +1,6 @@
 import base64
 import io
+import json
 import os
 from dataclasses import dataclass
 from typing import List
@@ -150,6 +151,9 @@ ss.setdefault("idx", 0)
 ss.setdefault("last_click", None)
 ss.setdefault("canvas_nonce", 0)
 ss.setdefault("want_sync", False)
+ss.setdefault("pending_download", False)
+ss.setdefault("trigger_download", False)
+ss.setdefault("download_nonce", 0)
 
 
 def switch_image(new_idx: int):
@@ -339,35 +343,62 @@ components.html(
     height=0,
 )
 
-# While a sync is pending, the canvas pushes its drawing back over one or two
-# reruns. The first render after the tap flips update_streamlit on but still sees
-# the stale (empty) value; the component then sends and reruns, and this block
-# picks up the strokes, commits them, and remounts the canvas to clear it.
+# While a sync is pending, the canvas pushes its drawing back over two reruns.
+# The component emits an empty state on mount, so we can't key off json_data
+# being non-None; instead we wait until actual strokes arrive. The first render
+# after the tap flips update_streamlit on but still sees the stale (empty) value;
+# the component then sends the real drawing and reruns, and this block picks up
+# the strokes, commits them, remounts the canvas to clear it, and queues the
+# mask download.
 if ss["want_sync"]:
     new_strokes = extract_strokes(canvas_result, scale, pen_size)
     if new_strokes:
         committed_fh.extend(new_strokes)
         ss["want_sync"] = False
         ss["canvas_nonce"] += 1
+        if ss["pending_download"]:
+            ss["pending_download"] = False
+            ss["trigger_download"] = True
         st.rerun()
 
 b1, b2 = st.columns(2)
 with b1:
-    if st.button("Save strokes", type="primary", use_container_width=True):
+    if st.button("Save & Download Mask", type="primary", use_container_width=True):
         ss["want_sync"] = True
+        ss["pending_download"] = True
         st.rerun()
 with b2:
     if st.button("Clear", use_container_width=True):
         ss["want_sync"] = False
+        ss["pending_download"] = False
         ss["canvas_nonce"] += 1
         st.rerun()
 
-if committed or committed_fh:
-    current_mask = build_mask(committed, committed_fh, (orig_w, orig_h), mask_width)
-    st.download_button(
-        "Download Mask",
-        data=mask_to_png_bytes(current_mask),
-        file_name=os.path.splitext(current.name)[0] + ".png",
-        mime="image/png",
-        use_container_width=True,
+# After the strokes are committed, auto-download the mask (same PNG the old
+# "Download Mask" button produced, named after the original image). The link is
+# created in the parent document so the browser is not blocked by the component
+# iframe's sandbox; the nonce forces the script to re-run on each download.
+if ss["trigger_download"]:
+    ss["trigger_download"] = False
+    ss["download_nonce"] += 1
+    mask_b64 = base64.b64encode(
+        mask_to_png_bytes(build_mask(committed, committed_fh, (orig_w, orig_h), mask_width))
+    ).decode()
+    dl_name = os.path.splitext(current.name)[0] + ".png"
+    components.html(
+        f"""
+        <script>
+        // download {ss['download_nonce']}
+        (function () {{
+          const doc = window.parent.document;
+          const a = doc.createElement('a');
+          a.href = 'data:image/png;base64,{mask_b64}';
+          a.download = {json.dumps(dl_name)};
+          doc.body.appendChild(a);
+          a.click();
+          a.remove();
+        }})();
+        </script>
+        """,
+        height=0,
     )
