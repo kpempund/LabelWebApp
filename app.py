@@ -264,34 +264,34 @@ with st.sidebar:
         )
 
 st.subheader("Draw the wrinkle with the pen")
-    disp_w = max(1, round(orig_w * scale))
-    disp_h = max(1, round(orig_h * scale))
-    bg = render_display_frame(current.img, scale, committed, [], committed_fh)
-    canvas_result = st_canvas(
-        fill_color="rgba(0,0,0,0)",
-        stroke_width=pen_size,
-        stroke_color="#00FF00",
-        background_image=bg,
-        update_streamlit=True,
-        height=disp_h,
-        width=disp_w,
-        drawing_mode="freedraw",
-        key=f"canvas_{current.name}_{ss['canvas_nonce']}",
-    )
-    b1, b2 = st.columns(2)
-    with b1:
-        if st.button("Finish freehand strokes", use_container_width=True):
-            new_strokes = extract_strokes(canvas_result, scale, pen_size)
-            if new_strokes:
-                committed_fh.extend(new_strokes)
-                ss["canvas_nonce"] += 1
-                st.rerun()
-            else:
-                st.warning("Draw at least one stroke first.")
-    with b2:
-        if st.button("Clear pending pen", use_container_width=True):
+disp_w = max(1, round(orig_w * scale))
+disp_h = max(1, round(orig_h * scale))
+bg = render_display_frame(current.img, scale, committed, [], committed_fh)
+canvas_result = st_canvas(
+    fill_color="rgba(0,0,0,0)",
+    stroke_width=pen_size,
+    stroke_color="#00FF00",
+    background_image=bg,
+    update_streamlit=True,
+    height=disp_h,
+    width=disp_w,
+    drawing_mode="freedraw",
+    key=f"canvas_{current.name}_{ss['canvas_nonce']}",
+)
+b1, b2 = st.columns(2)
+with b1:
+    if st.button("Finish freehand strokes", use_container_width=True):
+        new_strokes = extract_strokes(canvas_result, scale, pen_size)
+        if new_strokes:
+            committed_fh.extend(new_strokes)
             ss["canvas_nonce"] += 1
             st.rerun()
+        else:
+            st.warning("Draw at least one stroke first.")
+with b2:
+    if st.button("Clear pending pen", use_container_width=True):
+        ss["canvas_nonce"] += 1
+        st.rerun()
 
 sizes = {it.name: it.img.size for it in items}
 names_with_work = {n for n, v in ss["annotations"].items() if v} | {
