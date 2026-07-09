@@ -177,15 +177,29 @@ uploaded = st.file_uploader(
     accept_multiple_files=True,
 )
 
+# Decode each uploaded image only once and reuse it across reruns. With
+# update_streamlit on, every pen stroke reruns the whole script; re-decoding and
+# re-orienting full-resolution phone photos each time blocks the server long
+# enough to drop the websocket on mobile, which shows up as lag and Streamlit's
+# "Tried to use SessionInfo before it was initialized" popup.
+_prev_cache = ss.get("img_cache", {})
+img_cache = {}
 items: List[Item] = []
 if uploaded:
     for f in uploaded:
-        try:
-            img = Image.open(f)
-            img = ImageOps.exif_transpose(img)
-            items.append(Item(name=f.name, img=pil_to_rgb(img)))
-        except Exception as e:
-            st.warning(f"Failed to read {f.name}: {e}")
+        sig = (f.name, f.size)
+        img = _prev_cache.get(sig)
+        if img is None:
+            try:
+                decoded = Image.open(f)
+                decoded = ImageOps.exif_transpose(decoded)
+                img = pil_to_rgb(decoded)
+            except Exception as e:
+                st.warning(f"Failed to read {f.name}: {e}")
+                continue
+        img_cache[sig] = img
+        items.append(Item(name=f.name, img=img))
+ss["img_cache"] = img_cache
 
 if not items:
     st.info("Upload images to start.")
@@ -230,8 +244,6 @@ with st.sidebar:
 st.subheader("Draw the wrinkle with the pen")
 disp_w = max(1, round(orig_w * scale))
 disp_h = max(1, round(orig_h * scale))
-bg = render_display_frame(current.img, scale, committed, [], committed_fh)
-
 # Deliver the background as a fabric.js backgroundImage (a data URL inside
 # initial_drawing) instead of via st_canvas' background_image argument. That
 # argument registers a temporary Streamlit media file whose /media/<id>.png URL
@@ -240,9 +252,22 @@ bg = render_display_frame(current.img, scale, committed, [], committed_fh)
 # fabric backgroundImage loads the data URL directly: origin-independent, no media
 # file, and it survives reruns. It is not a path object, so stroke extraction
 # (which only reads objects of type "path") is unaffected.
-_buf = io.BytesIO()
-bg.save(_buf, format="PNG")
-bg_data_url = "data:image/png;base64," + base64.b64encode(_buf.getvalue()).decode()
+#
+# Memoize it: while drawing (update_streamlit reruns on every stroke) the
+# committed work is unchanged, so re-resizing and re-encoding the photo each time
+# is pure waste that slows the app and can drop the mobile websocket. The signature
+# covers every way the frame can change: image, scale, remount (canvas_nonce), and
+# committed click/freehand counts (every mutation also bumps one of these).
+bg_sig = (current.name, scale, ss["canvas_nonce"], len(committed), len(committed_fh))
+if ss.get("bg_sig") == bg_sig and ss.get("bg_url"):
+    bg_data_url = ss["bg_url"]
+else:
+    bg = render_display_frame(current.img, scale, committed, [], committed_fh)
+    _buf = io.BytesIO()
+    bg.save(_buf, format="PNG")
+    bg_data_url = "data:image/png;base64," + base64.b64encode(_buf.getvalue()).decode()
+    ss["bg_sig"] = bg_sig
+    ss["bg_url"] = bg_data_url
 initial_drawing = {
     "version": "4.4.0",
     "backgroundImage": {
