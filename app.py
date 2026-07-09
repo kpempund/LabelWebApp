@@ -7,12 +7,8 @@ from typing import List
 import streamlit as st
 from PIL import Image, ImageDraw, ImageOps
 from streamlit_drawable_canvas import st_canvas
-from streamlit_image_coordinates import streamlit_image_coordinates
-
 from core import (
     DEFAULT_MASK_WIDTH,
-    MAX_MASK_WIDTH,
-    MIN_MASK_WIDTH,
     annotations_to_json_bytes,
     combine_masks,
     mask_to_png_bytes,
@@ -168,25 +164,15 @@ st.title("Wrinkle Annotator")
 
 with st.sidebar:
     st.header("Controls")
-    tool = st.radio("Tool", ["Click points", "Freehand pen"], key="tool")
-    mask_width = st.slider(
-        "Mask line width (click tool, px)",
-        MIN_MASK_WIDTH,
-        MAX_MASK_WIDTH,
-        ss.get("mask_width_value", DEFAULT_MASK_WIDTH),
-        key="mask_width_slider",
+    mask_width = DEFAULT_MASK_WIDTH
+    pen_size = st.slider(
+        "Pen size (px)",
+        MIN_PEN_SIZE,
+        MAX_PEN_SIZE,
+        ss.get("pen_size_value", DEFAULT_PEN_SIZE),
+        key="pen_size_slider",
     )
-    ss["mask_width_value"] = mask_width
-    pen_size = DEFAULT_PEN_SIZE
-    if tool == "Freehand pen":
-        pen_size = st.slider(
-            "Pen size (px)",
-            MIN_PEN_SIZE,
-            MAX_PEN_SIZE,
-            ss.get("pen_size_value", DEFAULT_PEN_SIZE),
-            key="pen_size_slider",
-        )
-        ss["pen_size_value"] = pen_size
+    ss["pen_size_value"] = pen_size
 
     st.divider()
     st.subheader("Resume session")
@@ -216,12 +202,11 @@ if imported is not None:
     import_id = (imported.name, imported.size)
     if ss["import_applied"] != import_id:
         try:
-            parsed, parsed_fh, width, skipped = parse_annotations_json(
+            parsed, parsed_fh, _, skipped = parse_annotations_json(
                 imported.getvalue(), known_names={it.name for it in items}
             )
             ss["annotations"].update(parsed)
             ss["freehand"].update(parsed_fh)
-            ss["mask_width_value"] = width
             ss["import_applied"] = import_id
             msg = f"Imported annotations for {len(set(parsed) | set(parsed_fh))} image(s)."
             if skipped:
@@ -278,8 +263,7 @@ with st.sidebar:
             use_container_width=True,
         )
 
-if tool == "Freehand pen":
-    st.subheader("Draw the wrinkle with the pen")
+st.subheader("Draw the wrinkle with the pen")
     disp_w = max(1, round(orig_w * scale))
     disp_h = max(1, round(orig_h * scale))
     bg = render_display_frame(current.img, scale, committed, [], committed_fh)
@@ -307,39 +291,6 @@ if tool == "Freehand pen":
     with b2:
         if st.button("Clear pending pen", use_container_width=True):
             ss["canvas_nonce"] += 1
-            st.rerun()
-else:
-    st.subheader("Click the wrinkle centerline")
-    frame = render_display_frame(current.img, scale, committed, ss["current_points"], committed_fh)
-    click = streamlit_image_coordinates(frame, key=f"click_{current.name}")
-    if click is not None:
-        click_id = (click["x"], click["y"])
-        if click_id != ss["last_click"]:
-            ss["last_click"] = click_id
-            ox = min(max(click["x"] / scale, 0.0), orig_w - 1.0)
-            oy = min(max(click["y"] / scale, 0.0), orig_h - 1.0)
-            pt = (ox, oy)
-            if not ss["current_points"] or ss["current_points"][-1] != pt:
-                ss["current_points"].append(pt)
-                st.rerun()
-
-    b1, b2, b3 = st.columns(3)
-    with b1:
-        if st.button("Finish wrinkle", use_container_width=True):
-            if len(ss["current_points"]) >= 2:
-                committed.append(ss["current_points"])
-                ss["current_points"] = []
-                st.rerun()
-            else:
-                st.warning("Need at least 2 points to finish a wrinkle.")
-    with b2:
-        if st.button("Undo last point", use_container_width=True):
-            if ss["current_points"]:
-                ss["current_points"].pop()
-                st.rerun()
-    with b3:
-        if st.button("Discard in-progress", use_container_width=True):
-            ss["current_points"] = []
             st.rerun()
 
 sizes = {it.name: it.img.size for it in items}
