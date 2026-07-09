@@ -1,23 +1,18 @@
 import base64
 import io
 import os
-import zipfile
 from dataclasses import dataclass
 from typing import List
 
-import numpy as np
 import streamlit as st
-import streamlit_drawable_canvas as _sdc
+import streamlit.components.v1 as components
 from PIL import Image, ImageDraw, ImageOps
 from streamlit_drawable_canvas import st_canvas
 from core import (
     DEFAULT_MASK_WIDTH,
-    annotations_to_json_bytes,
     combine_masks,
     mask_to_png_bytes,
-    parse_annotations_json,
     polylines_to_mask,
-    safe_mask_name,
     strokes_to_mask,
 )
 
@@ -48,32 +43,6 @@ st.markdown(
     """,
     unsafe_allow_html=True,
 )
-
-
-class _BgImageURLShim:
-    """Serve the canvas background as a self-contained data: URL.
-
-    streamlit-drawable-canvas 0.9.3 builds the background image URL via
-    streamlit's media-file store and prepends ``server.baseUrlPath``. On
-    Streamlit Community Cloud that relative URL 404s inside the component
-    iframe, so the uploaded image never appears on the canvas (upstream
-    issue #142, repo archived/unmaintained). A base64 data URL is
-    origin/path-independent and always loads. We swap the component's
-    ``st_image`` alias so this is used without touching global Streamlit.
-    """
-
-    @staticmethod
-    def image_to_url(img, width, clamp, channels, output_format, image_id):
-        if not isinstance(img, Image.Image):
-            img = Image.fromarray(np.asarray(img))
-        if img.mode != "RGB":
-            img = img.convert("RGB")
-        buf = io.BytesIO()
-        img.save(buf, format="PNG")
-        return "data:image/png;base64," + base64.b64encode(buf.getvalue()).decode()
-
-
-_sdc.st_image = _BgImageURLShim()
 
 
 def _expected_password() -> str:
@@ -179,7 +148,6 @@ ss.setdefault("freehand", {})
 ss.setdefault("current_points", [])
 ss.setdefault("idx", 0)
 ss.setdefault("last_click", None)
-ss.setdefault("import_applied", None)
 ss.setdefault("canvas_nonce", 0)
 
 
@@ -203,10 +171,6 @@ with st.sidebar:
     )
     ss["pen_size_value"] = pen_size
 
-    st.divider()
-    st.subheader("Resume session")
-    imported = st.file_uploader("Import annotations.json", type=["json"], key="import_json")
-
 uploaded = st.file_uploader(
     "Upload image(s) (jpg/png)",
     type=["jpg", "jpeg", "png"],
@@ -226,25 +190,6 @@ if uploaded:
 if not items:
     st.info("Upload images to start.")
     st.stop()
-
-if imported is not None:
-    import_id = (imported.name, imported.size)
-    if ss["import_applied"] != import_id:
-        try:
-            parsed, parsed_fh, _, skipped = parse_annotations_json(
-                imported.getvalue(), known_names={it.name for it in items}
-            )
-            ss["annotations"].update(parsed)
-            ss["freehand"].update(parsed_fh)
-            ss["import_applied"] = import_id
-            msg = f"Imported annotations for {len(set(parsed) | set(parsed_fh))} image(s)."
-            if skipped:
-                msg += f" Skipped unknown image(s): {', '.join(skipped)}"
-            st.sidebar.success(msg)
-            st.rerun()
-        except ValueError as e:
-            ss["import_applied"] = import_id
-            st.sidebar.error(f"Import failed: {e}")
 
 if ss["idx"] >= len(items):
     switch_image(0)
@@ -274,7 +219,6 @@ committed_fh = ss["freehand"].setdefault(current.name, [])
 with st.sidebar:
     st.divider()
     st.subheader("Current image")
-    st.write(f"Click wrinkles: {len(committed)}")
     st.write(f"Freehand strokes: {len(committed_fh)}")
     if committed and st.button("Delete last click wrinkle", use_container_width=True):
         committed.pop()
@@ -282,34 +226,89 @@ with st.sidebar:
     if committed_fh and st.button("Delete last freehand stroke", use_container_width=True):
         committed_fh.pop()
         st.rerun()
-    if committed or committed_fh:
-        current_mask = build_mask(committed, committed_fh, (orig_w, orig_h), mask_width)
-        st.download_button(
-            "Download current mask PNG",
-            data=mask_to_png_bytes(current_mask),
-            file_name=safe_mask_name(current.name),
-            mime="image/png",
-            use_container_width=True,
-        )
 
 st.subheader("Draw the wrinkle with the pen")
 disp_w = max(1, round(orig_w * scale))
 disp_h = max(1, round(orig_h * scale))
 bg = render_display_frame(current.img, scale, committed, [], committed_fh)
+
+# Deliver the background as a fabric.js backgroundImage (a data URL inside
+# initial_drawing) instead of via st_canvas' background_image argument. That
+# argument registers a temporary Streamlit media file whose /media/<id>.png URL
+# 404s after any rerun remounts the canvas, and the component's frontend prepends
+# the app origin to it (so a bare data URL there becomes a malformed URL). A
+# fabric backgroundImage loads the data URL directly: origin-independent, no media
+# file, and it survives reruns. It is not a path object, so stroke extraction
+# (which only reads objects of type "path") is unaffected.
+_buf = io.BytesIO()
+bg.save(_buf, format="PNG")
+bg_data_url = "data:image/png;base64," + base64.b64encode(_buf.getvalue()).decode()
+initial_drawing = {
+    "version": "4.4.0",
+    "backgroundImage": {
+        "type": "image",
+        "version": "4.4.0",
+        "originX": "left",
+        "originY": "top",
+        "left": 0,
+        "top": 0,
+        "width": disp_w,
+        "height": disp_h,
+        "scaleX": 1,
+        "scaleY": 1,
+        "crossOrigin": None,
+        "src": bg_data_url,
+    },
+}
 canvas_result = st_canvas(
     fill_color="rgba(0,0,0,0)",
     stroke_width=pen_size,
     stroke_color="#00FF00",
-    background_image=bg,
+    background_image=None,
     update_streamlit=True,
     height=disp_h,
     width=disp_w,
     drawing_mode="freedraw",
+    initial_drawing=initial_drawing,
     key=f"canvas_{current.name}_{ss['canvas_nonce']}",
 )
+
+# The drawable-canvas toolbar renders inside its own iframe, so page CSS can't
+# reach it. Inject a <style> into that iframe to hide the download ("Send to
+# Streamlit") and reset ("Reset canvas & history") icons, keeping only undo/redo.
+components.html(
+    """
+    <script>
+    (function () {
+      const HIDE = ['Send to Streamlit', 'Reset canvas & history'];
+      const CSS = HIDE.map(a => 'img[alt="' + a + '"]').join(',') +
+        '{display:none !important;}';
+      function apply() {
+        let frames;
+        try { frames = window.parent.document.querySelectorAll('iframe'); }
+        catch (e) { return; }
+        frames.forEach(function (f) {
+          if (!/drawable_canvas/.test(f.src || '')) return;
+          let doc;
+          try { doc = f.contentDocument; } catch (e) { return; }
+          if (!doc || !doc.head || doc.getElementById('hide-canvas-tools')) return;
+          const s = doc.createElement('style');
+          s.id = 'hide-canvas-tools';
+          s.textContent = CSS;
+          doc.head.appendChild(s);
+        });
+      }
+      apply();
+      setInterval(apply, 500);
+    })();
+    </script>
+    """,
+    height=0,
+)
+
 b1, b2 = st.columns(2)
 with b1:
-    if st.button("Finish freehand strokes", use_container_width=True):
+    if st.button("Finish", use_container_width=True):
         new_strokes = extract_strokes(canvas_result, scale, pen_size)
         if new_strokes:
             committed_fh.extend(new_strokes)
@@ -318,28 +317,16 @@ with b1:
         else:
             st.warning("Draw at least one stroke first.")
 with b2:
-    if st.button("Clear pending pen", use_container_width=True):
+    if st.button("Clear", use_container_width=True):
         ss["canvas_nonce"] += 1
         st.rerun()
 
-sizes = {it.name: it.img.size for it in items}
-names_with_work = {n for n, v in ss["annotations"].items() if v} | {
-    n for n, v in ss["freehand"].items() if v
-}
-names_with_work &= set(sizes)
-if names_with_work:
-    export_ann = {n: ss["annotations"].get(n, []) for n in names_with_work}
-    export_fh = {n: ss["freehand"].get(n, []) for n in names_with_work if ss["freehand"].get(n)}
-    zip_buf = io.BytesIO()
-    with zipfile.ZipFile(zip_buf, "w", compression=zipfile.ZIP_DEFLATED) as zf:
-        for name in names_with_work:
-            m = build_mask(ss["annotations"].get(name, []), ss["freehand"].get(name, []), sizes[name], mask_width)
-            zf.writestr(safe_mask_name(name), mask_to_png_bytes(m))
-        zf.writestr("annotations.json", annotations_to_json_bytes(export_ann, mask_width, export_fh))
+if committed or committed_fh:
+    current_mask = build_mask(committed, committed_fh, (orig_w, orig_h), mask_width)
     st.download_button(
-        f"Download ZIP ({len(names_with_work)} masks + annotations.json)",
-        data=zip_buf.getvalue(),
-        file_name="masks.zip",
-        mime="application/zip",
+        "Download Mask",
+        data=mask_to_png_bytes(current_mask),
+        file_name=os.path.splitext(current.name)[0] + ".png",
+        mime="image/png",
         use_container_width=True,
     )
