@@ -1,10 +1,13 @@
+import base64
 import io
 import os
 import zipfile
 from dataclasses import dataclass
 from typing import List
 
+import numpy as np
 import streamlit as st
+import streamlit_drawable_canvas as _sdc
 from PIL import Image, ImageDraw, ImageOps
 from streamlit_drawable_canvas import st_canvas
 from core import (
@@ -45,6 +48,32 @@ st.markdown(
     """,
     unsafe_allow_html=True,
 )
+
+
+class _BgImageURLShim:
+    """Serve the canvas background as a self-contained data: URL.
+
+    streamlit-drawable-canvas 0.9.3 builds the background image URL via
+    streamlit's media-file store and prepends ``server.baseUrlPath``. On
+    Streamlit Community Cloud that relative URL 404s inside the component
+    iframe, so the uploaded image never appears on the canvas (upstream
+    issue #142, repo archived/unmaintained). A base64 data URL is
+    origin/path-independent and always loads. We swap the component's
+    ``st_image`` alias so this is used without touching global Streamlit.
+    """
+
+    @staticmethod
+    def image_to_url(img, width, clamp, channels, output_format, image_id):
+        if not isinstance(img, Image.Image):
+            img = Image.fromarray(np.asarray(img))
+        if img.mode != "RGB":
+            img = img.convert("RGB")
+        buf = io.BytesIO()
+        img.save(buf, format="PNG")
+        return "data:image/png;base64," + base64.b64encode(buf.getvalue()).decode()
+
+
+_sdc.st_image = _BgImageURLShim()
 
 
 def _expected_password() -> str:
