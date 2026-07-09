@@ -149,6 +149,7 @@ ss.setdefault("current_points", [])
 ss.setdefault("idx", 0)
 ss.setdefault("last_click", None)
 ss.setdefault("canvas_nonce", 0)
+ss.setdefault("want_sync", False)
 
 
 def switch_image(new_idx: int):
@@ -285,12 +286,19 @@ initial_drawing = {
         "src": bg_data_url,
     },
 }
+# Only sync the canvas to the server when the user taps "Save strokes", not on
+# every stroke. Per-stroke syncing ships a canvas image over the websocket for
+# each stroke, which on iPad (all browsers there use WebKit) repeatedly stalls
+# and reconnects the socket -> lag and the "SessionInfo before it was
+# initialized" popup. update_streamlit is flipped on for the one render cycle
+# that pulls the drawing back; drawing itself stays fully client-side.
+sync = bool(ss["want_sync"])
 canvas_result = st_canvas(
     fill_color="rgba(0,0,0,0)",
     stroke_width=pen_size,
     stroke_color="#00FF00",
     background_image=None,
-    update_streamlit=True,
+    update_streamlit=sync,
     height=disp_h,
     width=disp_w,
     drawing_mode="freedraw",
@@ -331,18 +339,26 @@ components.html(
     height=0,
 )
 
+# While a sync is pending, the canvas pushes its drawing back over one or two
+# reruns. The first render after the tap flips update_streamlit on but still sees
+# the stale (empty) value; the component then sends and reruns, and this block
+# picks up the strokes, commits them, and remounts the canvas to clear it.
+if ss["want_sync"]:
+    new_strokes = extract_strokes(canvas_result, scale, pen_size)
+    if new_strokes:
+        committed_fh.extend(new_strokes)
+        ss["want_sync"] = False
+        ss["canvas_nonce"] += 1
+        st.rerun()
+
 b1, b2 = st.columns(2)
 with b1:
-    if st.button("Finish", use_container_width=True):
-        new_strokes = extract_strokes(canvas_result, scale, pen_size)
-        if new_strokes:
-            committed_fh.extend(new_strokes)
-            ss["canvas_nonce"] += 1
-            st.rerun()
-        else:
-            st.warning("Draw at least one stroke first.")
+    if st.button("Save strokes", type="primary", use_container_width=True):
+        ss["want_sync"] = True
+        st.rerun()
 with b2:
     if st.button("Clear", use_container_width=True):
+        ss["want_sync"] = False
         ss["canvas_nonce"] += 1
         st.rerun()
 
