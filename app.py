@@ -23,6 +23,16 @@ MIN_PEN_SIZE = 1
 MAX_PEN_SIZE = 60
 DEFAULT_PEN_SIZE = 6
 
+# Pen-tip icon (lucide "pen"), shown as the freedraw cursor instead of Fabric.js's
+# default crosshair. Hotspot (3, 25) lines up with the icon's drawing tip. Two color
+# variants so the injected script (below) can pick one to match light/dark theme.
+PEN_CURSOR_WHITE_B64 = (
+    "PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHdpZHRoPSIyNCIgaGVpZ2h0PSIyNCIgdmlld0JveD0iMCAwIDI0IDI0IiBmaWxsPSJub25lIiBzdHJva2U9IiNmZmZmZmYiIHN0cm9rZS13aWR0aD0iMiIgc3Ryb2tlLWxpbmVjYXA9InJvdW5kIiBzdHJva2UtbGluZWpvaW49InJvdW5kIj48cGF0aCBkPSJNMjEuMTc0IDYuODEyYTEgMSAwIDAgMC0zLjk4Ni0zLjk4N0wzLjg0MiAxNi4xNzRhMiAyIDAgMCAwLS41LjgzbC0xLjMyMSA0LjM1MmEuNS41IDAgMCAwIC42MjMuNjIybDQuMzUzLTEuMzJhMiAyIDAgMCAwIC44My0uNDk3eiIvPjwvc3ZnPg=="
+)
+PEN_CURSOR_BLACK_B64 = (
+    "PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHdpZHRoPSIyNCIgaGVpZ2h0PSIyNCIgdmlld0JveD0iMCAwIDI0IDI0IiBmaWxsPSJub25lIiBzdHJva2U9IiMwMDAwMDAiIHN0cm9rZS13aWR0aD0iMiIgc3Ryb2tlLWxpbmVjYXA9InJvdW5kIiBzdHJva2UtbGluZWpvaW49InJvdW5kIj48cGF0aCBkPSJNMjEuMTc0IDYuODEyYTEgMSAwIDAgMC0zLjk4Ni0zLjk4N0wzLjg0MiAxNi4xNzRhMiAyIDAgMCAwLS41LjgzbC0xLjMyMSA0LjM1MmEuNS41IDAgMCAwIC42MjMuNjIybDQuMzUzLTEuMzJhMiAyIDAgMCAwIC44My0uNDk3eiIvPjwvc3ZnPg=="
+)
+
 st.set_page_config(
     page_title="Wrinkle Annotator",
     layout="wide",
@@ -312,34 +322,55 @@ canvas_result = st_canvas(
 
 # The drawable-canvas toolbar renders inside its own iframe, so page CSS can't
 # reach it. Inject a <style> into that iframe to hide the download ("Send to
-# Streamlit") and reset ("Reset canvas & history") icons, keeping only undo/redo.
+# Streamlit") and reset ("Reset canvas & history") icons, keeping only undo/redo,
+# and to swap Fabric.js's default crosshair cursor for a pen icon. Fabric sets
+# cursor via a plain (non-!important) inline style on .upper-canvas, so a CSS
+# rule with !important overrides it. The pen icon's color (white/black) is picked
+# each poll from the parent page's body background luminance, so it tracks the
+# Streamlit light/dark theme (including a live toggle) without a rerun.
 components.html(
     """
     <script>
     (function () {
       const HIDE = ['Send to Streamlit', 'Reset canvas & history'];
-      const CSS = HIDE.map(a => 'img[alt="' + a + '"]').join(',') +
-        '{display:none !important;}';
+      const HIDE_CSS = HIDE.map(a => 'img[alt="' + a + '"]').join(',') + '{display:none !important;}';
+      const CURSOR_WHITE = 'url("data:image/svg+xml;base64,__PEN_CURSOR_WHITE_B64__") 3 25, crosshair';
+      const CURSOR_BLACK = 'url("data:image/svg+xml;base64,__PEN_CURSOR_BLACK_B64__") 3 25, crosshair';
+      function isDarkTheme() {
+        try {
+          const bg = window.parent.getComputedStyle(window.parent.document.body).backgroundColor;
+          const rgb = bg.match(/\\d+/g);
+          if (!rgb) return false;
+          const [r, g, b] = rgb.map(Number);
+          return (0.299 * r + 0.587 * g + 0.114 * b) < 128;
+        } catch (e) { return false; }
+      }
       function apply() {
         let frames;
         try { frames = window.parent.document.querySelectorAll('iframe'); }
         catch (e) { return; }
+        const cursor = isDarkTheme() ? CURSOR_WHITE : CURSOR_BLACK;
+        const css = HIDE_CSS + '.upper-canvas {cursor: ' + cursor + ' !important;}';
         frames.forEach(function (f) {
           if (!/drawable_canvas/.test(f.src || '')) return;
           let doc;
           try { doc = f.contentDocument; } catch (e) { return; }
-          if (!doc || !doc.head || doc.getElementById('hide-canvas-tools')) return;
-          const s = doc.createElement('style');
-          s.id = 'hide-canvas-tools';
-          s.textContent = CSS;
-          doc.head.appendChild(s);
+          if (!doc || !doc.head) return;
+          let s = doc.getElementById('hide-canvas-tools');
+          if (!s) {
+            s = doc.createElement('style');
+            s.id = 'hide-canvas-tools';
+            doc.head.appendChild(s);
+          }
+          if (s.textContent !== css) s.textContent = css;
         });
       }
       apply();
       setInterval(apply, 500);
     })();
     </script>
-    """,
+    """.replace("__PEN_CURSOR_WHITE_B64__", PEN_CURSOR_WHITE_B64)
+    .replace("__PEN_CURSOR_BLACK_B64__", PEN_CURSOR_BLACK_B64),
     height=0,
 )
 
